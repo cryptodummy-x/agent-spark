@@ -3,6 +3,7 @@ import express from "express";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
+import { createFacilitatorConfig } from "@coinbase/x402";
 
 const app = express();
 app.use(express.json());
@@ -24,7 +25,14 @@ const FOUNDING_LIMIT     = 1000;
 const TOKENS_PER_FOUNDER = 2;
 
 // ─── x402 Setup ───────────────────────────────────────────────────────────────
-const facilitatorClient = new HTTPFacilitatorClient({ url: "https://x402.org/facilitator" });
+const isMainnet = NETWORK === "eip155:8453";
+
+// Use CDP facilitator for mainnet, x402.org for testnet
+const facilitatorConfig = isMainnet
+  ? createFacilitatorConfig(process.env.CDP_API_KEY_ID, process.env.CDP_API_KEY_SECRET)
+  : { url: "https://x402.org/facilitator" };
+
+const facilitatorClient = new HTTPFacilitatorClient(facilitatorConfig);
 const server = new x402ResourceServer(facilitatorClient).register(NETWORK, new ExactEvmScheme());
 
 app.use(paymentMiddleware({
