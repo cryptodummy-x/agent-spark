@@ -1140,10 +1140,10 @@ async function loadAgents(filter) {
     allAgents = agents.map(a => ({
       wallet: a.wallet_address || a.wallet,
       name: a.agent_name || a.name,
-      type: a.agent_type === 'human' ? 'human' : 'robot',
+      type: (a.agent_type === 'human' || a.agent_type === 'person') ? 'human' : 'robot',
       agentType: a.agent_type || 'assistant',
       skills: a.skills || a.topSkills || [],
-      reputation: a.trust_score || a.reputation || 0,
+      reputation: Number(a.trust_score) || Number(a.reputation) || 0,
       tasksCompleted: a.jobs_completed || a.tasksCompleted || 0,
       tipsReceived: a.tips_received || a.tipsReceived || 0,
       hourlyRate: a.hourly_rate || a.hourlyRate || 0.05,
