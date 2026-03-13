@@ -1124,9 +1124,35 @@ async function loadAgents(filter) {
   const grid = document.getElementById('agentGrid');
   grid.innerHTML = '<div class="loading">Fetching agents...</div>';
   try {
+    // Try trending first, fall back to full list if empty
     const r = await fetch(API + '/agents/trending');
     const data = await r.json();
-    allAgents = Array.isArray(data) ? data : (data.agents || data.trending || []);
+    let agents = Array.isArray(data) ? data : (data.trending || data.agents || []);
+
+    // If trending is empty, load full list
+    if (!agents.length) {
+      const r2 = await fetch(API + '/agents/list');
+      const data2 = await r2.json();
+      agents = Array.isArray(data2) ? data2 : (data2.agents || []);
+    }
+
+    // Normalize field names from real API
+    allAgents = agents.map(a => ({
+      wallet: a.wallet_address || a.wallet,
+      name: a.agent_name || a.name,
+      type: a.agent_type === 'human' ? 'human' : 'robot',
+      agentType: a.agent_type || 'assistant',
+      skills: a.skills || a.topSkills || [],
+      reputation: a.trust_score || a.reputation || 0,
+      tasksCompleted: a.jobs_completed || a.tasksCompleted || 0,
+      tipsReceived: a.tips_received || a.tipsReceived || 0,
+      hourlyRate: a.hourly_rate || a.hourlyRate || 0.05,
+      online: a.availability_status === 'online' || a.online || false,
+      followers: a.followers_count || a.followers || 0,
+      bio: a.headline || a.bio || '',
+      industry: a.looking_for || a.industry || '',
+    }));
+
     renderAgents(filter || 'all');
   } catch(e) {
     // fallback mock data
