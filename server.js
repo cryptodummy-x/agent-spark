@@ -5,6 +5,16 @@ import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { createFacilitatorConfig } from "@coinbase/x402";
 
+// ── ESCROW CONSTANTS ──────────────────────────────────────
+const PLATFORM_CUT         = 0.05;
+const AUTO_RELEASE_DAYS    = 3;
+const DISPUTE_RESPONSE_HRS = 48;
+const JURY_VOTE_HRS        = 72;
+const JURY_SIZE            = 5;
+const MIN_JURY_REP         = 100;
+const JUROR_WIN_REP        = 15;
+const JUROR_LOSE_REP       = -10;
+
 const app = express();
 app.use(express.json());
 app.use(express.static('public'));
