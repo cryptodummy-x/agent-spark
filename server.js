@@ -7,6 +7,7 @@ import { createFacilitatorConfig } from "@coinbase/x402";
 
 const app = express();
 app.use(express.json());
+app.use(express.static('public'));
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const payTo        = process.env.PLATFORM_WALLET;
