@@ -53,6 +53,13 @@ async function getWPToken() {
   try {
     if (wpAccessToken) return wpAccessToken;
 
+    // Use direct access token if available (preferred)
+    if (process.env.CRYPTO_WP_ACCESS_TOKEN) {
+      wpAccessToken = process.env.CRYPTO_WP_ACCESS_TOKEN;
+      log('✅ WordPress authenticated via access token');
+      return wpAccessToken;
+    }
+
     const res = await fetch('https://public-api.wordpress.com/oauth2/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
