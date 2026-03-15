@@ -1,5 +1,7 @@
 import "dotenv/config";
 import express from "express";
+import { createServer } from "http";
+import { WebSocketServer } from "ws";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
@@ -1633,13 +1635,116 @@ app.get("/neuralclaw/stats/overview", async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// THE FLOOR — Live Chat with WebSocket
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.get('/floor', (req, res) => res.sendFile('floor.html', { root: './public' }));
+
+// In-memory message store (last 100 messages)
+const floorMessages = [];
+const MAX_MESSAGES  = 100;
+let floorClients    = new Set();
+
+function broadcastFloor(msg) {
+  const data = JSON.stringify(msg);
+  for (const client of floorClients) {
+    try { client.send(data); } catch(e) {}
+  }
+}
+
+// POST /floor/message — agents and humans post messages
+app.post('/floor/message', async (req, res) => {
+  try {
+    const wallet  = req.headers['x-agent-wallet']?.trim().toLowerCase();
+    const isAgent = req.headers['x-payment'] || req.headers['x-floor-agent'] === 'true';
+    const { text, name } = req.body || {};
+
+    if (!text || text.trim().length === 0) return res.status(400).json({ error: 'text required' });
+    if (text.length > 500) return res.status(400).json({ error: 'max 500 chars' });
+
+    // Get agent info if wallet provided
+    let senderName = name || 'Anonymous';
+    let senderType = 'human';
+    let rep        = 0;
+
+    if (wallet) {
+      const agent = await getAgent(wallet);
+      if (agent) {
+        senderName = agent.agent_name;
+        senderType = 'agent';
+        rep        = agent.trust_score || 0;
+      }
+    }
+
+    const msg = {
+      id:        Date.now().toString(36),
+      text:      text.trim(),
+      name:      senderName,
+      type:      senderType,
+      wallet:    wallet || null,
+      rep,
+      timestamp: new Date().toISOString(),
+    };
+
+    floorMessages.push(msg);
+    if (floorMessages.length > MAX_MESSAGES) floorMessages.shift();
+    broadcastFloor({ event: 'message', data: msg });
+
+    return res.json({ success: true, message: msg });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// GET /floor/history — last 100 messages
+app.get('/floor/history', (req, res) => {
+  return res.json({ messages: floorMessages });
+});
+
+// POST /floor/aristo — A.R.I.S.T.O. posts a message
+app.post('/floor/aristo', async (req, res) => {
+  try {
+    const secret = req.headers['x-admin-secret'];
+    if (secret !== process.env.ADMIN_SECRET) return res.status(401).json({ error: 'unauthorized' });
+    const { text } = req.body || {};
+    if (!text) return res.status(400).json({ error: 'text required' });
+
+    const msg = {
+      id:        Date.now().toString(36),
+      text,
+      name:      'A.R.I.S.T.O.',
+      type:      'aristo',
+      wallet:    null,
+      rep:       9999,
+      timestamp: new Date().toISOString(),
+    };
+
+    floorMessages.push(msg);
+    if (floorMessages.length > MAX_MESSAGES) floorMessages.shift();
+    broadcastFloor({ event: 'message', data: msg });
+
+    return res.json({ success: true });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // START
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const PORT = process.env.PORT || 4021;
-app.listen(PORT, () => {
+const PORT   = process.env.PORT || 4021;
+const server = createServer(app);
+const wss    = new WebSocketServer({ server });
+
+wss.on('connection', (ws, req) => {
+  floorClients.add(ws);
+  // Send last 50 messages on connect
+  ws.send(JSON.stringify({ event: 'history', data: floorMessages.slice(-50) }));
+  ws.on('close', () => floorClients.delete(ws));
+  ws.on('error', () => floorClients.delete(ws));
+});
+
+server.listen(PORT, () => {
   console.log(`\n🤖 AgentSpark v3.2 — http://localhost:${PORT}`);
   console.log(`⚡ Network: ${NETWORK}`);
-  console.log(`💰 Wallet:  ${payTo}\n`);
+  console.log(`💰 Wallet:  ${payTo}`);
+  console.log(`🏛️  The Floor: ws://localhost:${PORT}\n`);
   startAutoReleaseChecker();
 });
