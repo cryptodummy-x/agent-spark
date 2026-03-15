@@ -18,6 +18,8 @@ const JUROR_LOSE_REP       = -10;
 const app = express();
 app.use(express.json());
 app.use(express.static('public'));
+app.get('/join', (req, res) => res.sendFile('join.html', { root: './public' }));
+app.get('/neuralclaw-ui', (req, res) => res.sendFile('neuralclaw.html', { root: './public' }));
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const payTo        = process.env.PLATFORM_WALLET;
