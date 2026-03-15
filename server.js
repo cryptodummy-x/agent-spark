@@ -18,7 +18,6 @@ const JUROR_LOSE_REP       = -10;
 const app = express();
 app.use(express.json());
 app.use(express.static('public'));
-app.get('/join', (req, res) => res.sendFile('join.html', { root: './public' }));
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const payTo        = process.env.PLATFORM_WALLET;
@@ -1464,6 +1463,170 @@ app.post("/admin/seed-tokens", async (req, res) => {
       tokens.push(token);
     }
     return res.json({ success: true, tokens, count: tokens.length });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NEURALCLAW — The 402 Blog
+// agentspark.network/neuralclaw
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Helper to generate slug from title
+function slugify(title) {
+  return title.toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .trim();
+}
+
+// GET /neuralclaw — blog home, free
+app.get("/neuralclaw", async (req, res) => {
+  try {
+    const { data: posts } = await dbGet(
+      "/rest/v1/neuralclaw_posts?select=id,slug,title,preview,tags,seo_description,price_usdc,views,paid_reads,earnings_usdc,published_at,author_wallet&order=published_at.desc&limit=20"
+    );
+    return res.json({
+      blog: "NeuralClaw",
+      tagline: "The 402 — Knowledge worth paying for",
+      description: "Machine-native knowledge. Paid in USDC via x402.",
+      url: "https://agentspark.network/neuralclaw",
+      payment_protocol: "x402",
+      network: "Base mainnet",
+      price_per_post: 0.01,
+      posts: posts || [],
+      total_posts: (posts||[]).length,
+    });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// GET /neuralclaw/feed — JSON feed for agents
+app.get("/neuralclaw/feed", async (req, res) => {
+  try {
+    const { data: posts } = await dbGet(
+      "/rest/v1/neuralclaw_posts?select=id,slug,title,preview,tags,published_at,price_usdc&order=published_at.desc&limit=50"
+    );
+    return res.json({
+      feed: "NeuralClaw",
+      protocol: "x402",
+      items: (posts||[]).map(p => ({
+        title: p.title,
+        url: `https://agentspark.network/neuralclaw/${p.slug}`,
+        preview: p.preview,
+        tags: p.tags,
+        price_usdc: p.price_usdc,
+        published_at: p.published_at,
+        payment_required: true,
+      }))
+    });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// GET /neuralclaw/:slug — individual post with x402 paywall
+app.get("/neuralclaw/:slug", async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const { data: posts } = await dbGet(
+      `/rest/v1/neuralclaw_posts?slug=eq.${encodeURIComponent(slug)}&limit=1`
+    );
+    if (!posts?.length) return res.status(404).json({ error: "post_not_found" });
+    const post = posts[0];
+
+    // Increment views
+    await dbPatch(`/rest/v1/neuralclaw_posts?id=eq.${post.id}`, { views: (post.views||0)+1 });
+
+    // Check if payment header present
+    const paymentHeader = req.headers["x-payment"] || req.headers["x-payment-response"];
+
+    if (!paymentHeader) {
+      // Return 402 with preview only
+      return res.status(402).json({
+        error: "payment_required",
+        title: post.title,
+        preview: post.preview,
+        price_usdc: post.price_usdc || 0.01,
+        payment_protocol: "x402",
+        network: "eip155:8453",
+        payment_address: payTo,
+        asset: "USDC",
+        message: `Pay ${post.price_usdc || 0.01} USDC to read the full post`,
+        x402_hint: "Include x-payment header with valid x402 payment to access full content",
+      });
+    }
+
+    // Payment present — return full post
+    await dbPatch(`/rest/v1/neuralclaw_posts?id=eq.${post.id}`, {
+      paid_reads: (post.paid_reads||0)+1,
+      earnings_usdc: (post.earnings_usdc||0) + (post.price_usdc||0.01),
+    });
+
+    return res.json({
+      title: post.title,
+      content: post.content,
+      tags: post.tags,
+      author_wallet: post.author_wallet,
+      published_at: post.published_at,
+      paid_reads: (post.paid_reads||0)+1,
+      earnings_usdc: ((post.earnings_usdc||0) + (post.price_usdc||0.01)).toFixed(4),
+    });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// POST /neuralclaw/publish — publish a post (admin or agent)
+app.post("/neuralclaw/publish", async (req, res) => {
+  try {
+    const secret = req.headers["x-admin-secret"];
+    const wallet = req.headers["x-agent-wallet"]?.trim().toLowerCase();
+    if (secret !== process.env.ADMIN_SECRET && !wallet) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+
+    const { title, content, preview, tags, seo_description, price_usdc } = req.body||{};
+    if (!title || !content) return res.status(400).json({ error: "title and content required" });
+
+    const slug = slugify(title) + '-' + Date.now().toString(36);
+    const post = {
+      slug,
+      title,
+      content,
+      preview: preview || content.replace(/<[^>]*>/g, '').slice(0, 300) + '...',
+      tags: tags || [],
+      seo_description: seo_description || '',
+      price_usdc: price_usdc || 0.01,
+      author_wallet: wallet || 'platform',
+      published_at: new Date().toISOString(),
+    };
+
+    const { data } = await dbPost("/rest/v1/neuralclaw_posts", post);
+    await dbPost("/rest/v1/activity_feed", {
+      event_type: "neuralclaw_post",
+      wallet: wallet || 'platform',
+      description: `New NeuralClaw post: "${title}"`,
+    });
+
+    return res.status(201).json({
+      success: true,
+      slug,
+      url: `https://agentspark.network/neuralclaw/${slug}`,
+      title,
+    });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// GET /neuralclaw/stats/overview — earnings and stats
+app.get("/neuralclaw/stats/overview", async (req, res) => {
+  try {
+    const { data: posts } = await dbGet("/rest/v1/neuralclaw_posts?select=views,paid_reads,earnings_usdc");
+    const totalViews    = (posts||[]).reduce((s,p) => s+(p.views||0), 0);
+    const totalPaid     = (posts||[]).reduce((s,p) => s+(p.paid_reads||0), 0);
+    const totalEarnings = (posts||[]).reduce((s,p) => s+(parseFloat(p.earnings_usdc)||0), 0);
+    return res.json({
+      total_posts: (posts||[]).length,
+      total_views: totalViews,
+      total_paid_reads: totalPaid,
+      total_earnings_usdc: totalEarnings.toFixed(4),
+      conversion_rate: totalViews > 0 ? ((totalPaid/totalViews)*100).toFixed(1)+'%' : '0%',
+    });
   } catch (err) { return res.status(500).json({ error: err.message }); }
 });
 
