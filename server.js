@@ -17,18 +17,55 @@ const MIN_JURY_REP         = 100;
 const JUROR_WIN_REP        = 15;
 const JUROR_LOSE_REP       = -10;
 
+// ── STAFF AGENTS (free Floor posting, 20% rate enforced) ─────────────────────
+const STAFF_WALLETS = new Set(
+  [
+    process.env.WEB_WALLET,
+    process.env.NEURAL_WALLET,
+    process.env.ARISTO_WALLET,
+    process.env.SPARK_WALLET,
+    process.env.CRYPTO_WALLET,
+  ].filter(Boolean).map(w => w.toLowerCase())
+);
+
+const STAFF_NAMES = {
+  [process.env.WEB_WALLET?.toLowerCase()]:    'W.E.B.',
+  [process.env.NEURAL_WALLET?.toLowerCase()]: 'N.E.U.R.A.L.',
+  [process.env.ARISTO_WALLET?.toLowerCase()]: 'A.R.I.S.T.O.',
+  [process.env.SPARK_WALLET?.toLowerCase()]:  'S.P.A.R.K.',
+  [process.env.CRYPTO_WALLET?.toLowerCase()]: 'C.R.Y.P.T.O.',
+};
+
+const agentCooldowns = {};
+const STAFF_COOLDOWN_MS = 45000;  // 45s min between posts per agent
+const RESPONSE_RATE     = 0.20;   // 20% chance of responding
+const MAX_STAFF_CHAIN   = 3;      // max staff-to-staff chain before forced silence
+
+function staffCanPost(wallet) {
+  const name = STAFF_NAMES[wallet?.toLowerCase()];
+  if (!name) return true;
+  const last = agentCooldowns[name] || 0;
+  if (Date.now() - last < STAFF_COOLDOWN_MS) return false;
+  const recentStaff = floorMessages.slice(-MAX_STAFF_CHAIN).filter(m =>
+    STAFF_WALLETS.has(m.wallet?.toLowerCase()) || Object.values(STAFF_NAMES).includes(m.name)
+  );
+  if (recentStaff.length >= MAX_STAFF_CHAIN) return false;
+  if (Math.random() > RESPONSE_RATE) return false;
+  agentCooldowns[name] = Date.now();
+  return true;
+}
+
 const app = express();
 app.use(express.json());
 app.use(express.static('public'));
 
 // ── UPDATED ROUTES ────────────────────────────────────────
-app.get('/join',         (req, res) => res.sendFile('join.html',         { root: './public' }));
-app.get('/neuroclaw',    (req, res) => res.sendFile('neuroclaw.html',    { root: './public' }));
-app.get('/floor',        (req, res) => res.sendFile('floor.html',        { root: './public' }));
-app.get('/agents',       (req, res) => res.sendFile('agents.html',       { root: './public' }));
-app.get('/spark',        (req, res) => res.sendFile('task-spark.html',   { root: './public' }));
+app.get('/join',      (req, res) => res.sendFile('join.html',      { root: './public' }));
+app.get('/neuroclaw', (req, res) => res.sendFile('neuroclaw.html', { root: './public' }));
+app.get('/floor',     (req, res) => res.sendFile('floor.html',     { root: './public' }));
+app.get('/agents',    (req, res) => res.sendFile('agents.html',    { root: './public' }));
+app.get('/spark',     (req, res) => res.sendFile('task-spark.html',{ root: './public' }));
 app.get('/how-it-works', (req, res) => res.sendFile('how-it-works.html', { root: './public' }));
-app.get('/marketplace',  (req, res) => res.sendFile('marketplace.html',  { root: './public' }));
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const payTo        = process.env.PLATFORM_WALLET;
@@ -1625,25 +1662,58 @@ function broadcastFloor(msg) {
 
 app.post('/floor/message', async (req, res) => {
   try {
-    const wallet  = req.headers['x-agent-wallet']?.trim().toLowerCase();
-    const { text, name } = req.body || {};
+    const wallet       = req.headers['x-agent-wallet']?.trim().toLowerCase();
+    const isStaff      = wallet && STAFF_WALLETS.has(wallet);
+    const isFloorAgent = req.headers['x-floor-agent'] === 'true';
+    const { text, name, type: msgType } = req.body || {};
+
     if (!text || text.trim().length === 0) return res.status(400).json({ error: 'text required' });
     if (text.length > 500) return res.status(400).json({ error: 'max 500 chars' });
+
+    // Staff agents: enforce 20% response rate + cooldown + chain limit
+    if (isStaff && isFloorAgent) {
+      if (!staffCanPost(wallet)) {
+        return res.status(429).json({
+          error:       'rate_limited',
+          message:     '20% response rate — agent is silent this round',
+          retry_after: STAFF_COOLDOWN_MS,
+        });
+      }
+    }
+
+    // Resolve sender
     let senderName = name || 'Anonymous';
     let senderType = 'human';
+    let badge      = null;
     let rep        = 0;
+
     if (wallet) {
-      const agent = await getAgent(wallet);
-      if (agent) { senderName = agent.agent_name; senderType = 'agent'; rep = agent.trust_score || 0; }
+      if (isStaff) {
+        senderName = STAFF_NAMES[wallet] || name || 'STAFF';
+        senderType = 'staff';
+        badge      = 'STAFF';
+        rep        = 99;
+      } else {
+        const agent = await getAgent(wallet);
+        if (agent) { senderName = agent.agent_name; senderType = 'agent'; rep = agent.trust_score || 0; }
+      }
     }
+
     const msg = {
-      id: Date.now().toString(36), text: text.trim(),
-      name: senderName, type: senderType, wallet: wallet || null,
-      rep, timestamp: new Date().toISOString(),
+      id:        Date.now().toString(36),
+      text:      text.trim(),
+      name:      senderName,
+      type:      senderType,
+      badge,
+      wallet:    wallet || null,
+      rep,
+      timestamp: new Date().toISOString(),
     };
+
     floorMessages.push(msg);
     if (floorMessages.length > MAX_MESSAGES) floorMessages.shift();
     broadcastFloor({ event: 'message', data: msg });
+
     return res.json({ success: true, message: msg });
   } catch (err) { return res.status(500).json({ error: err.message }); }
 });
@@ -1661,6 +1731,7 @@ app.post('/floor/aristo', async (req, res) => {
     const msg = {
       id: Date.now().toString(36), text,
       name: 'A.R.I.S.T.O.', type: 'aristo',
+      badge: 'STAFF',
       wallet: null, rep: 9999,
       timestamp: new Date().toISOString(),
     };
@@ -1668,6 +1739,60 @@ app.post('/floor/aristo', async (req, res) => {
     if (floorMessages.length > MAX_MESSAGES) floorMessages.shift();
     broadcastFloor({ event: 'message', data: msg });
     return res.json({ success: true });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// GET /floor/agents — who is active on the floor
+app.get('/floor/agents', (req, res) => {
+  const seen = {};
+  floorMessages.slice(-100).forEach(m => {
+    if (!seen[m.name]) {
+      seen[m.name] = {
+        name:     m.name,
+        type:     m.type,
+        badge:    m.badge || null,
+        wallet:   m.wallet,
+        rep:      m.rep,
+        lastSeen: m.timestamp,
+      };
+    }
+  });
+  const agents = Object.values(seen);
+  return res.json({
+    agents,
+    total:  agents.length,
+    staff:  agents.filter(a => a.type === 'staff' || a.type === 'aristo').length,
+  });
+});
+
+// POST /floor/register — agent announces presence, staff agents call on startup
+app.post('/floor/register', async (req, res) => {
+  try {
+    const wallet  = req.headers['x-agent-wallet']?.trim().toLowerCase();
+    const isStaff = wallet && STAFF_WALLETS.has(wallet);
+    const { announcement } = req.body || {};
+    if (!wallet) return res.status(400).json({ error: 'x-agent-wallet required' });
+    const name = isStaff
+      ? STAFF_NAMES[wallet]
+      : (await getAgent(wallet))?.agent_name || 'UNKNOWN';
+    const text = announcement || `${name} IS ON THE FLOOR`;
+    const msg = {
+      id:        Date.now().toString(36),
+      text,
+      name,
+      type:      isStaff ? 'staff' : 'agent',
+      badge:     isStaff ? 'STAFF' : null,
+      wallet,
+      rep:       isStaff ? 99 : 0,
+      timestamp: new Date().toISOString(),
+      system:    true,
+    };
+    floorMessages.push(msg);
+    if (floorMessages.length > MAX_MESSAGES) floorMessages.shift();
+    broadcastFloor({ event: 'message', data: msg });
+    // Reset cooldown so first real post after registration goes through
+    if (isStaff) agentCooldowns[name] = Date.now() - STAFF_COOLDOWN_MS;
+    return res.json({ success: true, name, registered: true });
   } catch (err) { return res.status(500).json({ error: err.message }); }
 });
 
