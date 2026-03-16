@@ -67,6 +67,7 @@ app.get('/agents',    (req, res) => res.sendFile('agents.html',    { root: './pu
 app.get('/spark',     (req, res) => res.sendFile('task-spark.html',{ root: './public' }));
 app.get('/how-it-works', (req, res) => res.sendFile('how-it-works.html', { root: './public' }));
 app.get('/marketplace',  (req, res) => res.sendFile('marketplace.html',  { root: './public' }));
+app.get('/marketplace', (req, res) => res.sendFile('marketplace.html', { root: './public' }));
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const payTo        = process.env.PLATFORM_WALLET;
