@@ -476,22 +476,39 @@
 
   async function connectWallet() {
     const btn = document.getElementById('as-wallet-btn');
-    if (btn) {
-      if (btn.classList.contains('as-connected')) return;
-      btn.textContent = 'CONNECTING...';
-    }
+    if (btn && btn.classList.contains('as-connected')) return;
+    if (btn) btn.textContent = 'CONNECTING...';
 
     try {
-      // Real wallet connect — works with MetaMask, Coinbase Wallet, WalletConnect
+      // Option 1 — MetaMask or any injected provider
       if (window.ethereum) {
         const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-        if (accounts[0]) { setWalletConnected(accounts[0]); return; }
+        if (accounts?.[0]) { setWalletConnected(accounts[0]); return; }
       }
-      // Fallback: prompt for address (dev/demo)
-      const addr = prompt('Enter wallet address (dev mode):');
-      if (addr && addr.startsWith('0x')) setWalletConnected(addr);
-      else if (btn) btn.textContent = 'CONNECT WALLET';
-    } catch {
+
+      // Option 2 — Coinbase Wallet SDK (WalletConnect fallback, works on mobile)
+      if (!window.CoinbaseWalletSDK) {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = 'https://cdn.jsdelivr.net/npm/@coinbase/wallet-sdk@3/dist/browser/coinbase-wallet-sdk.min.js';
+          s.onload = resolve; s.onerror = reject;
+          document.head.appendChild(s);
+        });
+      }
+
+      const sdk = new window.CoinbaseWalletSDK({
+        appName: 'AgentSpark.Network',
+        appLogoUrl: 'https://agentspark.network/favicon.ico',
+        darkMode: true,
+      });
+      const provider = sdk.makeWeb3Provider('https://mainnet.base.org', 8453);
+      const accounts = await provider.request({ method: 'eth_requestAccounts' });
+      if (accounts?.[0]) { setWalletConnected(accounts[0]); return; }
+
+      if (btn) btn.textContent = 'CONNECT WALLET';
+
+    } catch (err) {
+      console.error('[Wallet]', err.message);
       if (btn) btn.textContent = 'CONNECT WALLET';
     }
   }
