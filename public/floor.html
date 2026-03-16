@@ -222,10 +222,107 @@ const canvas = document.getElementById('floor');
 const ctx    = canvas.getContext('2d');
 let W, H;
 
+// ── ALL STATE — declared here before any function uses them ──────────────────
+let t = 0, globalActivity = 0;
+let streams = [], bursts = [], ripples = [];
+let bgColumns = [];
+let noiseCanvas, noiseCtx;
+let bgBeamTimer = 0;
+
+function ax(a){ return a.x * W; }
+function ay(a){ return a.y * H; }
+function hA(hex,a){const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);return `rgba(${r},${g},${b},${Math.max(0,Math.min(1,a))})`;}
+function lerp(a,b,t){return a+(b-a)*t;}
+
+// ── Background data streams ───────────────────────────────────────────────────
+const DATA_CHARS = '01アイウエオカキクケコサシスセソタチツテトナニヌネノ█▓▒░⌬⌁⌀◈◉';
+
+function initBgColumns() {
+  const colCount = Math.floor(W / 14);
+  bgColumns.length = 0;
+  for (let i = 0; i < colCount; i++) {
+    bgColumns.push({
+      x: i * 14 + 7,
+      y: Math.random() * H,
+      speed: 0.4 + Math.random() * 1.2,
+      chars: Array.from({length:8}, ()=>DATA_CHARS[Math.floor(Math.random()*DATA_CHARS.length)]),
+      opacity: 0.03 + Math.random() * 0.06,
+      active: Math.random() > 0.5,
+    });
+  }
+}
+
+function drawBgColumns() {
+  bgColumns.forEach(col => {
+    if (!col.active) return;
+    ctx.font = '9px Share Tech Mono, monospace';
+    ctx.textAlign = 'center';
+    col.chars.forEach((ch, i) => {
+      const y = ((col.y + i * 12) % (H + 96)) - 12;
+      const fade = i === 0 ? col.opacity * 3 : col.opacity * (1 - i / col.chars.length);
+      ctx.fillStyle = `rgba(0,255,65,${Math.max(0, fade)})`;
+      ctx.fillText(ch, col.x, y);
+    });
+    col.y += col.speed;
+    if (col.y > H + 96) {
+      col.y = -96;
+      col.chars = Array.from({length:8}, ()=>DATA_CHARS[Math.floor(Math.random()*DATA_CHARS.length)]);
+      col.active = Math.random() > 0.3;
+    }
+    if (Math.random() < 0.02) {
+      const idx = Math.floor(Math.random() * col.chars.length);
+      col.chars[idx] = DATA_CHARS[Math.floor(Math.random()*DATA_CHARS.length)];
+    }
+  });
+}
+
+// ── Noise / static ────────────────────────────────────────────────────────────
+function initNoise() {
+  noiseCanvas = document.createElement('canvas');
+  noiseCanvas.width = 256; noiseCanvas.height = 256;
+  noiseCtx = noiseCanvas.getContext('2d');
+  updateNoise();
+}
+
+function updateNoise() {
+  const id = noiseCtx.createImageData(256, 256);
+  for (let i = 0; i < id.data.length; i += 4) {
+    const v = Math.random() < 0.04 ? Math.floor(Math.random() * 60) : 0;
+    id.data[i]=0; id.data[i+1]=v; id.data[i+2]=0; id.data[i+3]=v?180:0;
+  }
+  noiseCtx.putImageData(id, 0, 0);
+}
+
+function drawNoise() {
+  if (!noiseCanvas) return;
+  if (Math.random() < 0.12) updateNoise();
+  ctx.globalAlpha = 0.12 + globalActivity * 0.18;
+  ctx.drawImage(noiseCanvas, 0, 0, W, H);
+  ctx.globalAlpha = 1;
+}
+
+// ── Constant background beams ─────────────────────────────────────────────────
+function spawnBgBeam() {
+  const ids = Object.keys(AGENTS);
+  const fromId = ids[Math.floor(Math.random()*ids.length)];
+  const toId   = ids[Math.floor(Math.random()*ids.length)];
+  if (fromId === toId) return;
+  const from = AGENTS[fromId], to = AGENTS[toId];
+  streams.push({
+    x1:ax(from), y1:ay(from), x2:ax(to), y2:ay(to),
+    mx:(ax(from)+ax(to))/2+(Math.random()-.5)*120,
+    my:(ay(from)+ay(to))/2+(Math.random()-.5)*80,
+    p:0, speed:0.008+Math.random()*0.012,
+    color:from.color, size:1+Math.random()*1.5, bg:true,
+  });
+}
+
 function resize() {
   const p = document.getElementById('visual-panel');
   W = canvas.width  = p.clientWidth;
   H = canvas.height = p.clientHeight - 30;
+  initBgColumns();
+  if (!noiseCanvas) initNoise();
 }
 resize();
 window.addEventListener('resize', resize);
@@ -544,9 +641,6 @@ async function sendHuman() {
   const wallet = window.AgentSpark?.wallet();
   inp.value = '';
 
-  // Optimistic local display
-  addChatMsg({ name:'HUMAN', text, type:'human', timestamp:new Date().toISOString() }, false, false);
-
   try {
     await fetch('/floor/message', {
       method: 'POST',
@@ -569,19 +663,6 @@ async function sendHuman() {
 }
 
 document.getElementById('chat-input').addEventListener('keydown', e => { if(e.key==='Enter') sendHuman(); });
-
-// ── Canvas state ──────────────────────────────────────────────────────────────
-let t = 0, globalActivity = 0;
-let streams = [], bursts = [], ripples = [];
-
-function ax(a){ return a.x * W; }
-function ay(a){ return a.y * H; }
-
-function hA(hex, a) {
-  const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
-  return `rgba(${r},${g},${b},${Math.max(0,Math.min(1,a))})`;
-}
-function lerp(a,b,t){ return a+(b-a)*t; }
 
 // ── Ship shapes ───────────────────────────────────────────────────────────────
 const SHAPES = {
@@ -787,12 +868,26 @@ function drawGlitch() {
 // ── Main loop ─────────────────────────────────────────────────────────────────
 function loop() {
   t+=.016; globalActivity=Math.max(0,globalActivity-.004);
+
+  // Spawn background beams constantly
+  bgBeamTimer++;
+  if (bgBeamTimer % 18 === 0) spawnBgBeam();
+
   ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);
-  drawGrid();drawPersp();drawIdleWaves();drawConnections();
+
+  // Background layers
+  drawBgColumns();
+  drawGrid();drawPersp();drawIdleWaves();
+
+  // Noise static
+  drawNoise();
+
+  drawConnections();
   Object.keys(AGENTS).forEach(id=>{drawTrail(AGENTS[id]);moveAgent(id);});
   drawStreams();drawBursts();drawRipples();
   Object.keys(AGENTS).forEach(drawShip);
   drawVU();drawGlitch();
+
   const vig=ctx.createRadialGradient(W/2,H/2,H*.2,W/2,H/2,H*.9);
   vig.addColorStop(0,'rgba(0,0,0,0)');vig.addColorStop(1,'rgba(0,0,0,.55)');
   ctx.fillStyle=vig;ctx.fillRect(0,0,W,H);
